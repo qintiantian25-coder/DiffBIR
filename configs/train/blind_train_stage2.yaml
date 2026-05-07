@@ -115,13 +115,14 @@ batch_transform:
 train:
   sd_path: /home/student_server/Qtt/NAFNet/weights/sd-v2-1-weights.ckpt
   exp_dir: ./experiments/blind_stage2
-  swinir_path: ./experiments/blind_stage1/checkpoints/latest.pt
+  swinir_path: ./experiments/blind_stage1/checkpoints/best_model.pt
   learning_rate: 1e-5
-  batch_size: 8
+  # Stage 2 is even more memory intensive; keep the default batch size conservative.
+  batch_size: 4
   num_workers: 4
-  train_steps: 8000
+  train_steps: 20000
   log_every: 50
-  ckpt_every: 10000
+  ckpt_every: 5000
   image_every: 1000
   val_interval_epochs: 5
   save_history: false

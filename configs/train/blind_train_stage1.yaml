@@ -39,11 +39,12 @@ batch_transform:
 train:
   exp_dir: ./experiments/blind_stage1
   learning_rate: 1e-4
-  batch_size: 16
+  # 512 crops with SwinIR are memory heavy; use a smaller default batch size.
+  batch_size: 4
   num_workers: 4
-  train_steps: 15000
+  train_steps: 40000
   log_every: 50
-  ckpt_every: 10000
+  ckpt_every: 5000
   image_every: 1000
   # validate every N epochs (not steps)
   val_interval_epochs: 5
