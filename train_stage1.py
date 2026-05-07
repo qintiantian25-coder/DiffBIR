@@ -81,7 +81,8 @@ def main(args) -> None:
         drop_last=False,
     )
     if accelerator.is_local_main_process:
-        print(f"Dataset contains {len(dataset):,} images from {dataset.file_list}")
+        dataset_source = getattr(dataset, "file_list", getattr(dataset, "dataset_path", "unknown"))
+        print(f"Dataset contains {len(dataset):,} images from {dataset_source}")
 
     batch_transform = instantiate_from_config(cfg.batch_transform)
 

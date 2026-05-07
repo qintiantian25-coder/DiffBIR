@@ -156,7 +156,8 @@ def main(args) -> None:
             pin_memory=True,
         )
     if accelerator.is_main_process:
-        print(f"Dataset contains {len(dataset):,} images")
+        dataset_source = getattr(dataset, "file_list", getattr(dataset, "dataset_path", "unknown"))
+        print(f"Dataset contains {len(dataset):,} images from {dataset_source}")
 
     batch_transform = instantiate_from_config(cfg.batch_transform)
 
