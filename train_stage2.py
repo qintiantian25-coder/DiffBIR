@@ -1,6 +1,9 @@
 import os
 from argparse import ArgumentParser
 import copy
+import json
+from datetime import datetime
+from pathlib import Path
 
 from omegaconf import OmegaConf
 import torch
@@ -17,12 +20,25 @@ from diffbir.utils.common import instantiate_from_config, to, log_txt_as_img, ca
 from diffbir.sampler import SpacedSampler
 
 
+def _append_validation_log(exp_dir: str, record: dict) -> None:
+    log_path = os.path.join(exp_dir, "validation_metrics.jsonl")
+    record = {
+        **record,
+        "timestamp": datetime.now().isoformat(timespec="seconds"),
+    }
+    with open(log_path, "a", encoding="utf-8") as f:
+        f.write(json.dumps(record, ensure_ascii=False) + "\n")
+
+
 def main(args) -> None:
     # Setup accelerator:
     accelerator = Accelerator(split_batches=True)
     set_seed(231, device_specific=True)
     device = accelerator.device
     cfg = OmegaConf.load(args.config)
+    exp_dir = cfg.train.exp_dir
+    ckpt_dir = os.path.join(exp_dir, "checkpoints")
+    log_path = os.path.join(exp_dir, "validation_metrics.jsonl")
 
     # Resolve swinir checkpoint: prefer best_model.pt if available, else latest
     swinir_path = cfg.train.get("swinir_path") if isinstance(cfg.train, dict) or hasattr(cfg.train, 'get') else cfg.train.swinir_path
@@ -68,9 +84,7 @@ def main(args) -> None:
 
     # Setup an experiment folder:
     if accelerator.is_main_process:
-        exp_dir = cfg.train.exp_dir
         os.makedirs(exp_dir, exist_ok=True)
-        ckpt_dir = os.path.join(exp_dir, "checkpoints")
         os.makedirs(ckpt_dir, exist_ok=True)
         print(f"Experiment directory created at {exp_dir}")
 
@@ -297,6 +311,7 @@ def main(args) -> None:
         # Run validation every N epochs if val_loader exists
         if val_loader is not None and (epoch % val_interval == 0):
             cldm.eval()
+            val_loss = []
             val_psnr = []
             val_pbar = tqdm(
                 iterable=None,
@@ -329,21 +344,51 @@ def main(args) -> None:
                     )
                     pred = (pure_cldm.vae_decode(z) + 1) / 2
                     gt_01 = (val_gt + 1) / 2
-                    val_psnr.append(calculate_psnr_pt(pred, gt_01, crop_border=0).mean().item())
+                    val_psnr.append(
+                        calculate_psnr_pt(pred, gt_01, crop_border=0).mean().item()
+                    )
+                    val_loss.append(
+                        torch.nn.functional.mse_loss(pred, gt_01, reduction="mean")
+                        .detach()
+                        .item()
+                    )
                 val_pbar.update(1)
             val_pbar.close()
+            avg_val_loss = (
+                accelerator.gather(torch.tensor(val_loss, device=device).unsqueeze(0))
+                .mean()
+                .item()
+            )
             avg_val_psnr = (
                 accelerator.gather(torch.tensor(val_psnr, device=device).unsqueeze(0))
                 .mean()
                 .item()
             )
             if accelerator.is_main_process:
+                metrics = {
+                    "stage": 2,
+                    "epoch": epoch,
+                    "global_step": global_step,
+                    "val_loss": avg_val_loss,
+                    "val_psnr": avg_val_psnr,
+                    "best_val_psnr": best_val_psnr,
+                }
+                print(
+                    "Validation | "
+                    f"epoch={epoch} | step={global_step} | "
+                    f"loss={avg_val_loss:.6f} | psnr={avg_val_psnr:.4f}"
+                )
                 writer.add_scalar("val/psnr", avg_val_psnr, global_step)
+                writer.add_scalar("val/loss", avg_val_loss, global_step)
+                _append_validation_log(exp_dir, metrics)
                 if avg_val_psnr > best_val_psnr:
                     best_val_psnr = avg_val_psnr
                     best_path = os.path.join(ckpt_dir, "best_model.pt")
                     torch.save(pure_cldm.controlnet.state_dict(), best_path)
-                    print(f"New best PSNR {best_val_psnr:.4f}, saved to {best_path}")
+                    print(
+                        f"[BEST UPDATED] psnr={best_val_psnr:.4f} "
+                        f"saved to {best_path}"
+                    )
             cldm.train()
 
     if accelerator.is_main_process:

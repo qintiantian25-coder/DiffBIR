@@ -1,5 +1,7 @@
 import os
 from argparse import ArgumentParser
+import json
+from datetime import datetime
 import warnings
 
 from omegaconf import OmegaConf
@@ -18,18 +20,29 @@ from diffbir.model import SwinIR
 from diffbir.utils.common import instantiate_from_config, calculate_psnr_pt, to
 
 
+def _append_validation_log(exp_dir: str, record: dict) -> None:
+    log_path = os.path.join(exp_dir, "validation_metrics.jsonl")
+    record = {
+        **record,
+        "timestamp": datetime.now().isoformat(timespec="seconds"),
+    }
+    with open(log_path, "a", encoding="utf-8") as f:
+        f.write(json.dumps(record, ensure_ascii=False) + "\n")
+
+
 def main(args) -> None:
     # Setup accelerator:
     accelerator = Accelerator(split_batches=True)
     set_seed(231)
     device = accelerator.device
     cfg = OmegaConf.load(args.config)
+    exp_dir = cfg.train.exp_dir
+    ckpt_dir = os.path.join(exp_dir, "checkpoints")
+    log_path = os.path.join(exp_dir, "validation_metrics.jsonl")
 
     # Setup an experiment folder:
     if accelerator.is_local_main_process:
-        exp_dir = cfg.train.exp_dir
         os.makedirs(exp_dir, exist_ok=True)
-        ckpt_dir = os.path.join(exp_dir, "checkpoints")
         os.makedirs(ckpt_dir, exist_ok=True)
         print(f"Experiment directory created at {exp_dir}")
 
@@ -247,18 +260,36 @@ def main(args) -> None:
                 .item()
             )
             if accelerator.is_local_main_process:
+                metrics = {
+                    "stage": 1,
+                    "epoch": epoch,
+                    "global_step": global_step,
+                    "val_loss": avg_val_loss,
+                    "val_lpips": avg_val_lpips,
+                    "val_psnr": avg_val_psnr,
+                    "best_val_psnr": best_val_psnr,
+                }
+                print(
+                    "Validation | "
+                    f"epoch={epoch} | step={global_step} | "
+                    f"loss={avg_val_loss:.6f} | lpips={avg_val_lpips:.6f} | psnr={avg_val_psnr:.4f}"
+                )
                 for tag, val in [
                     ("val/loss", avg_val_loss),
                     ("val/lpips", avg_val_lpips),
                     ("val/psnr", avg_val_psnr),
                 ]:
                     writer.add_scalar(tag, val, global_step)
+                _append_validation_log(exp_dir, metrics)
                 # Save best model by PSNR (overwrite)
                 if avg_val_psnr > best_val_psnr:
                     best_val_psnr = avg_val_psnr
                     best_path = os.path.join(ckpt_dir, "best_model.pt")
                     torch.save(pure_swinir.state_dict(), best_path)
-                    print(f"New best PSNR {best_val_psnr:.4f}, saved to {best_path}")
+                    print(
+                        f"[BEST UPDATED] psnr={best_val_psnr:.4f} "
+                        f"saved to {best_path}"
+                    )
             swinir.train()
 
     if accelerator.is_local_main_process:
