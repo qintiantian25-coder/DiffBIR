@@ -85,6 +85,10 @@ def main(args) -> None:
     step_loss = []
     epoch = 0
     epoch_loss = []
+    # best model tracking
+    best_val_psnr = float("-inf")
+    val_interval = int(cfg.train.get("val_interval_epochs", 5))
+    save_history = bool(cfg.train.get("save_history", False))
     with warnings.catch_warnings():
         # avoid warnings from lpips internal
         warnings.simplefilter("ignore")
@@ -140,8 +144,8 @@ def main(args) -> None:
                 if accelerator.is_local_main_process:
                     writer.add_scalar("train/loss_step", avg_loss, global_step)
 
-            # Save checkpoint:
-            if global_step % cfg.train.ckpt_every == 0:
+            # Save periodic checkpoint only if explicitly requested in config
+            if save_history and (global_step % cfg.train.ckpt_every == 0):
                 if accelerator.is_local_main_process:
                     checkpoint = pure_swinir.state_dict()
                     ckpt_path = f"{ckpt_dir}/{global_step:07d}.pt"
@@ -162,76 +166,7 @@ def main(args) -> None:
                         writer.add_image(tag, make_grid(image, nrow=4), global_step)
                 swinir.train()
 
-            # Evaluate model:
-            if global_step % cfg.train.val_every == 0:
-                swinir.eval()
-                val_loss = []
-                val_lpips = []
-                val_psnr = []
-                val_pbar = tqdm(
-                    iterable=None,
-                    disable=not accelerator.is_local_main_process,
-                    unit="batch",
-                    total=len(val_loader),
-                    leave=False,
-                    desc="Validation",
-                )
-                for val_batch in val_loader:
-                    to(val_batch, device)
-                    val_batch = batch_transform(val_batch)
-                    val_gt, val_lq, _ = val_batch
-                    val_gt = (
-                        rearrange((val_gt + 1) / 2, "b h w c -> b c h w")
-                        .contiguous()
-                        .float()
-                    )
-                    val_lq = (
-                        rearrange(val_lq, "b h w c -> b c h w").contiguous().float()
-                    )
-                    with torch.no_grad():
-                        val_pred = swinir(val_lq)
-                        val_loss.append(
-                            F.mse_loss(val_pred, val_gt, reduction="sum").item()
-                        )
-                        val_lpips.append(
-                            lpips_model(val_pred, val_gt, normalize=True).mean().item()
-                        )
-                        val_psnr.append(
-                            calculate_psnr_pt(val_pred, val_gt, crop_border=0)
-                            .mean()
-                            .item()
-                        )
-                    val_pbar.update(1)
-                val_pbar.close()
-                avg_val_loss = (
-                    accelerator.gather(
-                        torch.tensor(val_loss, device=device).unsqueeze(0)
-                    )
-                    .mean()
-                    .item()
-                )
-                avg_val_lpips = (
-                    accelerator.gather(
-                        torch.tensor(val_lpips, device=device).unsqueeze(0)
-                    )
-                    .mean()
-                    .item()
-                )
-                avg_val_psnr = (
-                    accelerator.gather(
-                        torch.tensor(val_psnr, device=device).unsqueeze(0)
-                    )
-                    .mean()
-                    .item()
-                )
-                if accelerator.is_local_main_process:
-                    for tag, val in [
-                        ("val/loss", avg_val_loss),
-                        ("val/lpips", avg_val_lpips),
-                        ("val/psnr", avg_val_psnr),
-                    ]:
-                        writer.add_scalar(tag, val, global_step)
-                swinir.train()
+            # validation will run at epoch boundaries (see below)
 
             accelerator.wait_for_everyone()
 
@@ -248,6 +183,83 @@ def main(args) -> None:
         epoch_loss.clear()
         if accelerator.is_local_main_process:
             writer.add_scalar("train/loss_epoch", avg_epoch_loss, global_step)
+
+        # Run validation every N epochs (val_interval)
+        if epoch % val_interval == 0:
+            swinir.eval()
+            val_loss = []
+            val_lpips = []
+            val_psnr = []
+            val_pbar = tqdm(
+                iterable=None,
+                disable=not accelerator.is_local_main_process,
+                unit="batch",
+                total=len(val_loader),
+                leave=False,
+                desc="Validation",
+            )
+            for val_batch in val_loader:
+                to(val_batch, device)
+                val_batch = batch_transform(val_batch)
+                val_gt, val_lq, _ = val_batch
+                val_gt = (
+                    rearrange((val_gt + 1) / 2, "b h w c -> b c h w")
+                    .contiguous()
+                    .float()
+                )
+                val_lq = (
+                    rearrange(val_lq, "b h w c -> b c h w").contiguous().float()
+                )
+                with torch.no_grad():
+                    val_pred = swinir(val_lq)
+                    val_loss.append(
+                        F.mse_loss(val_pred, val_gt, reduction="sum").item()
+                    )
+                    val_lpips.append(
+                        lpips_model(val_pred, val_gt, normalize=True).mean().item()
+                    )
+                    val_psnr.append(
+                        calculate_psnr_pt(val_pred, val_gt, crop_border=0)
+                        .mean()
+                        .item()
+                    )
+                val_pbar.update(1)
+            val_pbar.close()
+            avg_val_loss = (
+                accelerator.gather(
+                    torch.tensor(val_loss, device=device).unsqueeze(0)
+                )
+                .mean()
+                .item()
+            )
+            avg_val_lpips = (
+                accelerator.gather(
+                    torch.tensor(val_lpips, device=device).unsqueeze(0)
+                )
+                .mean()
+                .item()
+            )
+            avg_val_psnr = (
+                accelerator.gather(
+                    torch.tensor(val_psnr, device=device).unsqueeze(0)
+                )
+                .mean()
+                .item()
+            )
+            if accelerator.is_local_main_process:
+                for tag, val in [
+                    ("val/loss", avg_val_loss),
+                    ("val/lpips", avg_val_lpips),
+                    ("val/psnr", avg_val_psnr),
+                ]:
+                    writer.add_scalar(tag, val, global_step)
+                # Save best model by PSNR (overwrite)
+                if avg_val_psnr > best_val_psnr:
+                    best_val_psnr = avg_val_psnr
+                    best_path = os.path.join(ckpt_dir, "best_model.pt")
+                    torch.save(pure_swinir.state_dict(), best_path)
+                    print(f"New best PSNR {best_val_psnr:.4f}, saved to {best_path}")
+            swinir.train()
 
     if accelerator.is_local_main_process:
         print("done!")

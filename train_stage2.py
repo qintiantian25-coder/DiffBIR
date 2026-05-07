@@ -13,7 +13,7 @@ from tqdm import tqdm
 from torch.utils.tensorboard import SummaryWriter
 
 from diffbir.model import ControlLDM, SwinIR, Diffusion
-from diffbir.utils.common import instantiate_from_config, to, log_txt_as_img
+from diffbir.utils.common import instantiate_from_config, to, log_txt_as_img, calculate_psnr_pt
 from diffbir.sampler import SpacedSampler
 
 
@@ -23,6 +23,48 @@ def main(args) -> None:
     set_seed(231, device_specific=True)
     device = accelerator.device
     cfg = OmegaConf.load(args.config)
+
+    # Resolve swinir checkpoint: prefer best_model.pt if available, else latest
+    swinir_path = cfg.train.get("swinir_path") if isinstance(cfg.train, dict) or hasattr(cfg.train, 'get') else cfg.train.swinir_path
+    resolved_swinir = None
+    def _latest_checkpoint(ckpt_dir: str):
+        if not ckpt_dir or not os.path.isdir(ckpt_dir):
+            return None
+        candidates = sorted(Path(ckpt_dir).glob('*.pt'), key=lambda p: p.stat().st_mtime)
+        if not candidates:
+            return None
+        return str(candidates[-1])
+
+    if swinir_path:
+        # if explicit file exists, use it
+        if os.path.isfile(swinir_path):
+            resolved_swinir = swinir_path
+        else:
+            # try parent checkpoints dir
+            parent = os.path.dirname(swinir_path)
+            if os.path.basename(swinir_path) in ("latest.pt", "best_model.pt") and os.path.isdir(parent):
+                # prefer best_model.pt
+                best_candidate = os.path.join(parent, "best_model.pt")
+                if os.path.isfile(best_candidate):
+                    resolved_swinir = best_candidate
+                else:
+                    latest = _latest_checkpoint(parent)
+                    if latest:
+                        resolved_swinir = latest
+    # fallback common path for stage1 experiments
+    if resolved_swinir is None:
+        candidate = os.path.join("./experiments/blind_stage1/checkpoints", "best_model.pt")
+        if os.path.isfile(candidate):
+            resolved_swinir = candidate
+        else:
+            candidate_latest = _latest_checkpoint(os.path.join("./experiments/blind_stage1/checkpoints"))
+            if candidate_latest:
+                resolved_swinir = candidate_latest
+
+    if resolved_swinir is not None:
+        cfg.train.swinir_path = resolved_swinir
+        if accelerator.is_main_process:
+            print(f"Using SwinIR checkpoint: {resolved_swinir}")
 
     # Setup an experiment folder:
     if accelerator.is_main_process:
@@ -87,6 +129,18 @@ def main(args) -> None:
         drop_last=True,
         pin_memory=True,
     )
+    # optional validation dataset
+    val_loader = None
+    if hasattr(cfg.dataset, "val"):
+        val_dataset = instantiate_from_config(cfg.dataset.val)
+        val_loader = DataLoader(
+            dataset=val_dataset,
+            batch_size=cfg.train.batch_size,
+            num_workers=cfg.train.num_workers,
+            shuffle=False,
+            drop_last=False,
+            pin_memory=True,
+        )
     if accelerator.is_main_process:
         print(f"Dataset contains {len(dataset):,} images")
 
@@ -109,6 +163,10 @@ def main(args) -> None:
     sampler = SpacedSampler(
         diffusion.betas, diffusion.parameterization, rescale_cfg=False
     )
+    # best model tracking
+    best_val_psnr = float("-inf")
+    val_interval = int(cfg.train.get("val_interval_epochs", 5))
+    save_history = bool(cfg.train.get("save_history", False))
     if accelerator.is_main_process:
         writer = SummaryWriter(exp_dir)
         print(f"Training for {max_steps} steps...")
@@ -174,8 +232,8 @@ def main(args) -> None:
                 if accelerator.is_main_process:
                     writer.add_scalar("loss/loss_simple_step", avg_loss, global_step)
 
-            # Save checkpoint:
-            if global_step % cfg.train.ckpt_every == 0 and global_step > 0:
+            # Save periodic checkpoint only if explicitly requested
+            if save_history and (global_step % cfg.train.ckpt_every == 0 and global_step > 0):
                 if accelerator.is_main_process:
                     checkpoint = pure_cldm.controlnet.state_dict()
                     ckpt_path = f"{ckpt_dir}/{global_step:07d}.pt"
@@ -235,6 +293,58 @@ def main(args) -> None:
         epoch_loss.clear()
         if accelerator.is_main_process:
             writer.add_scalar("loss/loss_simple_epoch", avg_epoch_loss, global_step)
+
+        # Run validation every N epochs if val_loader exists
+        if val_loader is not None and (epoch % val_interval == 0):
+            cldm.eval()
+            val_psnr = []
+            val_pbar = tqdm(
+                iterable=None,
+                disable=not accelerator.is_main_process,
+                unit="batch",
+                total=len(val_loader),
+                leave=False,
+                desc="Validation",
+            )
+            for val_batch in val_loader:
+                to(val_batch, device)
+                val_batch = batch_transform(val_batch)
+                val_gt, val_lq, val_prompt = val_batch
+                val_gt = rearrange(val_gt, "b h w c -> b c h w").contiguous().float()
+                val_lq = rearrange(val_lq, "b h w c -> b c h w").contiguous().float()
+
+                with torch.no_grad():
+                    z_0 = pure_cldm.vae_encode(val_gt)
+                    clean = swinir(val_lq)
+                    cond = pure_cldm.prepare_condition(clean, val_prompt)
+                    z = sampler.sample(
+                        model=cldm,
+                        device=device,
+                        steps=50,
+                        x_size=(len(val_gt), *z_0.shape[1:]),
+                        cond=cond,
+                        uncond=None,
+                        cfg_scale=1.0,
+                        progress=False,
+                    )
+                    pred = (pure_cldm.vae_decode(z) + 1) / 2
+                    gt_01 = (val_gt + 1) / 2
+                    val_psnr.append(calculate_psnr_pt(pred, gt_01, crop_border=0).mean().item())
+                val_pbar.update(1)
+            val_pbar.close()
+            avg_val_psnr = (
+                accelerator.gather(torch.tensor(val_psnr, device=device).unsqueeze(0))
+                .mean()
+                .item()
+            )
+            if accelerator.is_main_process:
+                writer.add_scalar("val/psnr", avg_val_psnr, global_step)
+                if avg_val_psnr > best_val_psnr:
+                    best_val_psnr = avg_val_psnr
+                    best_path = os.path.join(ckpt_dir, "best_model.pt")
+                    torch.save(pure_cldm.controlnet.state_dict(), best_path)
+                    print(f"New best PSNR {best_val_psnr:.4f}, saved to {best_path}")
+            cldm.train()
 
     if accelerator.is_main_process:
         print("done!")

@@ -1,0 +1,52 @@
+model:
+  swinir:
+    target: diffbir.model.swinir.SwinIR
+    params:
+      img_size: 64
+      patch_size: 1
+      in_chans: 3
+      embed_dim: 180
+      depths: [6, 6, 6, 6, 6, 6, 6, 6]
+      num_heads: [6, 6, 6, 6, 6, 6, 6, 6]
+      window_size: 8
+      mlp_ratio: 2
+      sf: 8
+      img_range: 1.0
+      upsampler: "nearest+conv"
+      resi_connection: "1conv"
+      unshuffle: True
+      unshuffle_scale: 8
+
+dataset:
+  train:
+    target: diffbir.dataset.blind_dataset.BlindPairedDataset
+    params:
+      dataset_path: /home/student_server/Qtt/NAFNet/data
+      mode: train
+      out_size: 512
+      crop_type: center
+  val:
+    target: diffbir.dataset.blind_dataset.BlindPairedDataset
+    params:
+      dataset_path: /home/student_server/Qtt/NAFNet/data
+      mode: val
+      out_size: 512
+      crop_type: center
+
+batch_transform:
+  target: diffbir.dataset.batch_transform.IdentityBatchTransform
+
+train:
+  exp_dir: ./experiments/blind_stage1
+  learning_rate: 1e-4
+  batch_size: 16
+  num_workers: 4
+  train_steps: 50000
+  log_every: 50
+  ckpt_every: 10000
+  image_every: 1000
+  # validate every N epochs (not steps)
+  val_interval_epochs: 5
+  # only save a single best model by default. Set to true to keep periodic checkpoints too.
+  save_history: false
+  resume: ~
