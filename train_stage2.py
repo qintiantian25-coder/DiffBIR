@@ -208,7 +208,7 @@ def main(args) -> None:
             total=len(loader),
         )
         for batch in loader:
-            to(batch, device)
+            batch = to(batch, device)
             batch = batch_transform(batch)
             gt, lq, prompt = batch
             gt = rearrange(gt, "b h w c -> b c h w").contiguous().float()
@@ -337,7 +337,7 @@ def main(args) -> None:
                 desc="Validation",
             )
             for val_batch in val_loader:
-                to(val_batch, device)
+                val_batch = to(val_batch, device)
                 val_batch = batch_transform(val_batch)
                 val_gt, val_lq, val_prompt = val_batch
                 val_gt = rearrange(val_gt, "b h w c -> b c h w").contiguous().float()
