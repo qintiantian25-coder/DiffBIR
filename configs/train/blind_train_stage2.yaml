@@ -113,7 +113,7 @@ batch_transform:
   target: diffbir.dataset.batch_transform.IdentityBatchTransform
 
 train:
-  sd_path: /home/student_server/Qtt/NAFNet/weights/sd-v2-1-weights.ckpt
+  sd_path: ./weights/sd-v2-1-weights.ckpt
   exp_dir: ./experiments/blind_stage2
   swinir_path: ./experiments/blind_stage1/checkpoints/best_model.pt
   learning_rate: 1e-5
