@@ -90,7 +90,21 @@ def main(args) -> None:
 
     # Create model:
     cldm: ControlLDM = instantiate_from_config(cfg.model.cldm)
-    sd = torch.load(cfg.train.sd_path, map_location="cpu")["state_dict"]
+    # Load SD checkpoint: newer PyTorch may try weights-only loading by default
+    try:
+        loaded = torch.load(cfg.train.sd_path, map_location="cpu")
+    except Exception as e:
+        print(
+            "torch.load(weights_only=True) failed; retrying with weights_only=False."
+            " Ensure the checkpoint is from a trusted source."
+        )
+        loaded = torch.load(cfg.train.sd_path, map_location="cpu", weights_only=False)
+
+    # support both full checkpoint dicts and direct state_dicts
+    if isinstance(loaded, dict) and "state_dict" in loaded:
+        sd = loaded["state_dict"]
+    else:
+        sd = loaded
     unused, missing = cldm.load_pretrained_sd(sd)
     if accelerator.is_main_process:
         print(

@@ -88,7 +88,9 @@ def _run_stage1_test(cfg, train_cfg_path: str):
 
     model_cfg = train_cfg.model.swinir
     model = instantiate_from_config(model_cfg)
-    state_dict = torch.load(ckpt_path, map_location='cpu')
+    from diffbir.utils.common import safe_torch_load
+    state_dict_loaded = safe_torch_load(ckpt_path, map_location='cpu')
+    state_dict = state_dict_loaded['state_dict'] if isinstance(state_dict_loaded, dict) and 'state_dict' in state_dict_loaded else state_dict_loaded
     if isinstance(state_dict, dict) and 'state_dict' in state_dict:
         state_dict = state_dict['state_dict']
     state_dict = {

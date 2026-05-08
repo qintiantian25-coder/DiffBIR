@@ -49,9 +49,11 @@ def main(args) -> None:
     # Create model:
     swinir: SwinIR = instantiate_from_config(cfg.model.swinir)
     if cfg.train.resume:
-        swinir.load_state_dict(
-            torch.load(cfg.train.resume, map_location="cpu"), strict=True
-        )
+        from diffbir.utils.common import safe_torch_load
+
+        loaded = safe_torch_load(cfg.train.resume, map_location="cpu")
+        sd = loaded["state_dict"] if isinstance(loaded, dict) and "state_dict" in loaded else loaded
+        swinir.load_state_dict(sd, strict=True)
         if accelerator.is_local_main_process:
             print(f"strictly load weight from checkpoint: {cfg.train.resume}")
     else:
