@@ -1,6 +1,8 @@
 __pycache__
 *.ckpt
 *.pth
+*.pt   
+best_model.pt                 # 新增：忽略 .pt 模型文件（包括 best_model.pt）
 /data
 /exps
 *.sh
@@ -16,3 +18,10 @@ __pycache__
 /runs
 /tests
 /meta_files
+
+# TensorBoard 事件文件（新增）
+events.out.*
+*.tfevent*
+
+# 验证指标文件（新增）
+validation_metrics.jsonl
