@@ -110,9 +110,20 @@ def load_file_from_url(url, model_dir=None, progress=True, file_name=None):
     return cached_file
 
 
+def safe_torch_load(path: str, map_location: str | torch.device = "cpu"):
+    try:
+        return torch.load(path, map_location=map_location)
+    except Exception:
+        print(
+            "torch.load(weights_only=True) failed; retrying with weights_only=False. "
+            "Ensure the checkpoint is from a trusted source."
+        )
+        return torch.load(path, map_location=map_location, weights_only=False)
+
+
 def load_model_from_url(url: str) -> Dict[str, torch.Tensor]:
     sd_path = load_file_from_url(url, model_dir="weights")
-    sd = torch.load(sd_path, map_location="cpu")
+    sd = safe_torch_load(sd_path, map_location="cpu")
     if "state_dict" in sd:
         sd = sd["state_dict"]
     if list(sd.keys())[0].startswith("module"):
