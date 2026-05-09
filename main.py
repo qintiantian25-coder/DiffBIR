@@ -130,9 +130,8 @@ def _run_stage1_test(cfg, train_cfg_path: str):
 
 
 def call_test(cfg):
+    # allow stage-specific `test` sections; don't require a top-level `experiment.test` or `test`
     test_cfg = _get_section(cfg, 'experiment', 'test') or _get_section(cfg, 'test')
-    if test_cfg is None:
-        raise ValueError('test config must provide experiment.test or test section')
 
     experiment_cfg = _get_section(cfg, 'experiment') or cfg
     stage = int(experiment_cfg.get('stage', cfg.get('stage', 1)))
