@@ -158,7 +158,34 @@ def call_test(cfg):
     inf_mod = importlib.import_module('inference')
 
     argv = [sys.argv[0], '--input', input_dir, '--output', output_dir]
-    for key in ['device', 'n_samples', 'version', 'ckpt', 'train_cfg', 'task', 'sampler', 'steps', 'start_point_type', 'cleaner_tiled', 'vae_encoder_tiled', 'vae_decoder_tiled', 'cldm_tiled', 'captioner', 'cfg_scale', 'strength', 'batch_size', 'precision', 'llava_bit']:
+    for key in [
+        'device',
+        'n_samples',
+        'version',
+        'ckpt',
+        'train_cfg',
+        'task',
+        'upscale',
+        'sampler',
+        'steps',
+        'start_point_type',
+        'cleaner_tiled',
+        'cleaner_tile_size',
+        'cleaner_tile_stride',
+        'vae_encoder_tiled',
+        'vae_encoder_tile_size',
+        'vae_decoder_tiled',
+        'vae_decoder_tile_size',
+        'cldm_tiled',
+        'cldm_tile_size',
+        'cldm_tile_stride',
+        'captioner',
+        'cfg_scale',
+        'strength',
+        'batch_size',
+        'precision',
+        'llava_bit',
+    ]:
         value = test_cfg.get(key)
         if value is None:
             continue
